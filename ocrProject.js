@@ -1,3 +1,23 @@
+function installedOnEditExtract(e) {
+  const range = e.range;
+  const sheet = range.getSheet();
+
+  // A1（またはB2などチェックボックスのセル）がTRUEになったら実行
+  if (range.getA1Notation() === "B2" && e.value === "TRUE") { // 画像に合わせてB2に変更
+    const logCell = sheet.getRange("A5"); // ログ出力用セル
+    logCell.setValue("⌛ 文字列抽出作成処理中...");
+    try {
+      processImagesToSheet();
+      logCell.setValue("✅ 文字列抽出処理が完了しました（" + new Date().toLocaleTimeString() + "）");
+    } catch (err) {
+      // エラー内容をセルに書き出すとデバッグしやすいです
+      logCell.setValue("❌ 文字列抽出処理がエラー: " + err.toString());
+    } finally {
+      range.setValue(false); // チェックを外す
+    }
+  }
+}
+
 /**
  * フォルダ内の全画像をOCRしてスプレッドシートに転記
  */
