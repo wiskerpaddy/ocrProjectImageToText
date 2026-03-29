@@ -6,6 +6,12 @@ function installedOnEditExtract(e) {
   if (range.getA1Notation() === "B2" && e.value === "TRUE") { // 画像に合わせてB2に変更
     const logCell = sheet.getRange("A5"); // ログ出力用セル
     logCell.setValue("⌛ 文字列抽出作成処理中...");
+
+    // GASの logCell.setValue() は、スクリプトの全処理が終わるか、
+    // 処理が一時停止（待機）するまでスプレッドシート側の表示が更新されないため、
+    // 以下関数を使って強制更新
+    SpreadsheetApp.flush();
+
     try {
       processImagesToSheet();
       logCell.setValue("✅ 文字列抽出処理が完了しました（" + new Date().toLocaleTimeString() + "）");
