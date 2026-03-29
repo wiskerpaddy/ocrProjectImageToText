@@ -1,31 +1,30 @@
+/**
+ * スプレッドシートの編集（チェックボックスON）で起動
+ */
 function installedOnEditExtract(e) {
   const range = e.range;
   const sheet = range.getSheet();
 
-  // A1（またはB2などチェックボックスのセル）がTRUEになったら実行
-  if (range.getA1Notation() === "B2" && e.value === "TRUE") { // 画像に合わせてB2に変更
-    const logCell = sheet.getRange("A5"); // ログ出力用セル
-    logCell.setValue("⌛ 文字列抽出作成処理中...");
+  // B2セルがTRUEになったら実行
+  if (range.getA1Notation() === "B2" && e.value === "TRUE") {
+    const logCell = sheet.getRange("A5");
+    logCell.setValue("⌛ 文字列抽出・ゲームデータ作成中...");
 
-    // GASの logCell.setValue() は、スクリプトの全処理が終わるか、
-    // 処理が一時停止（待機）するまでスプレッドシート側の表示が更新されないため、
-    // 以下関数を使って強制更新
     SpreadsheetApp.flush();
 
     try {
       processImagesToSheet();
-      logCell.setValue("✅ 文字列抽出処理が完了しました（" + new Date().toLocaleTimeString() + "）");
+      logCell.setValue("✅ 処理が完了しました（" + new Date().toLocaleTimeString() + "）");
     } catch (err) {
-      // エラー内容をセルに書き出すとデバッグしやすいです
-      logCell.setValue("❌ 文字列抽出処理がエラー: " + err.toString());
+      logCell.setValue("❌ エラー発生: " + err.toString());
     } finally {
-      range.setValue(false); // チェックを外す
+      range.setValue(false); // チェックボックスを戻す
     }
   }
 }
 
 /**
- * フォルダ内の全画像をOCRしてスプレッドシートに転記
+ * フォルダ内の全画像をOCRしてスプレッドシートに転記し、ゲーム用JSを出力
  */
 function processImagesToSheet() {
   const props = PropertiesService.getScriptProperties();
@@ -35,33 +34,16 @@ function processImagesToSheet() {
   const SHEET_NAME = props.getProperty("SHEET_NAME");
 
   if (!INPUT_FOLDER_ID || !DONE_FOLDER_ID) {
-    console.warn("プロパティにフォルダIDを設定してください。");
-    return;
+    throw new Error("プロパティにフォルダIDを設定してください。");
   }
 
   const inputFolder = DriveApp.getFolderById(INPUT_FOLDER_ID);
   const doneFolder = DriveApp.getFolderById(DONE_FOLDER_ID);
 
-// --- スプレッドシートの指定処理 ---
-  let ss;
-
-  if (SPREADSHEET_ID) {
-    ss = SpreadsheetApp.openById(SPREADSHEET_ID);
-  } else {
-    // ID指定がない場合は、スクリプトが紐付いているシートを開く
-    ss = SpreadsheetApp.getActiveSpreadsheet();
-  }
-
-  let sheet = ss.getSheetByName(SHEET_NAME);
+  let ss = SPREADSHEET_ID ? SpreadsheetApp.openById(SPREADSHEET_ID) : SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(SHEET_NAME) || ss.getActiveSheet();
   
-  // 指定したシート名が存在しない場合の予備処理
-  if (!sheet) {
-    console.warn(`シート「${SHEET_NAME}」が見つかりません。アクティブなシートを使用します。`);
-    sheet = ss.getActiveSheet();
-  }
-  // ------------------------------
-  
-  // 1. フォルダ内の画像ファイルを取得（作成日時順にソート）
+  // 1. フォルダ内の画像ファイルを取得
   let fileList = [];
   const files = inputFolder.getFiles();
   while (files.hasNext()) {
@@ -72,39 +54,28 @@ function processImagesToSheet() {
   }
   fileList.sort((a, b) => a.getDateCreated() - b.getDateCreated());
 
-  if (fileList.length === 0) {
-    console.log("処理対象の画像が見つかりませんでした。");
-    return;
-  }
+  if (fileList.length === 0) return;
 
   let results = [];
-  
-  // --- Noの初期値計算 ---
-  let lastRow = sheet.getLastRow();
-  
-  // もし最終行が0（空）なら、ヘッダーもないので0からスタート
-  // もし最終行が1以上なら、1行目はヘッダーとみなして「最終行 - 1」を現在の件数とする
-  let currentNo = lastRow > 0 ? lastRow - 1 : 0;
+  let allGameWords = []; // ゲーム用データを溜める配列
+  let currentNo = sheet.getLastRow() > 0 ? sheet.getLastRow() - 1 : 0;
+
   // 2. 1枚ずつ順番にOCR処理
   for (let i = 0; i < fileList.length; i++) {
     const file = fileList[i];
     const fileName = file.getName();
 
     try {
-      console.log(`解析開始 (${i + 1}/${fileList.length}): ${fileName}`);
-      
       // OCR実行
       const extractedText = extractText(file.getId());
 
-      // [No, 画像名, 読み取り文字列] の形式で配列に追加
-      // 改行をスペースに置換して、1つのセルに収まりやすく整形
+      // スプレッドシート用：改行をスペースに置換
       const cleanText = extractedText.trim().replace(/\n/g, " ");
-      
-      results.push([
-        ++currentNo, 
-        fileName,    
-        cleanText    
-      ]);
+      results.push([++currentNo, fileName, cleanText]);
+
+      // ゲーム用データへのパース処理
+      const converted = parseTextToGameObjects(extractedText);
+      allGameWords = allGameWords.concat(converted);
 
       // 成功したら「処理済みフォルダ」へ移動
       doneFolder.addFile(file);
@@ -115,12 +86,46 @@ function processImagesToSheet() {
     }
   }
 
-  // 3. スプレッドシートの最終行に一括追記
+  // 3. スプレッドシートへの書き出し
   if (results.length > 0) {
-    const targetRange = sheet.getRange(sheet.getLastRow() + 1, 1, results.length, 3);
-    targetRange.setValues(results);
-    console.log(`${results.length} 件の転記が完了しました。`);
+    sheet.getRange(sheet.getLastRow() + 1, 1, results.length, 3).setValues(results);
   }
+
+  // 4. ゲーム用 JS ファイルの生成
+  if (allGameWords.length > 0) {
+    const jsonContent = JSON.stringify(allGameWords, null, 2); // 変数定義を付けない
+    const jsonFileName = `words.json`; // 名前を固定（または words_日時.json）
+    doneFolder.createFile(jsonFileName, jsonContent, MimeType.PLAIN_TEXT);
+  }
+}
+
+/**
+ * テキストを {text, hint} の形式に変換する
+ */
+function parseTextToGameObjects(rawText) {
+  const lines = rawText.split('\n').map(l => l.trim()).filter(l => l !== "");
+  const result = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    // 区切り文字（:や：や-）で分割を試みる
+    if (line.includes(':') || line.includes('：') || line.includes('-')) {
+      const parts = line.split(/[:：\-]/);
+      result.push({
+        text: parts[0].trim(),
+        hint: parts.slice(1).join(':').trim() || "???"
+      });
+    } 
+    // 区切りがない場合は2行1セットとして処理
+    else if (i + 1 < lines.length) {
+      result.push({
+        text: line,
+        hint: lines[i+1].trim()
+      });
+      i++; 
+    }
+  }
+  return result;
 }
 
 /**
@@ -132,13 +137,10 @@ function extractText(fileId) {
     mimeType: "application/vnd.google-apps.document"
   };
   
-  // Googleドキュメントとしてコピー（OCRを有効化）
   const tempFile = Drive.Files.copy(resource, fileId, { ocr: true, ocrLanguage: "ja" });
   const doc = DocumentApp.openById(tempFile.id);
   const text = doc.getBody().getText();
   
-  // 一時ファイルはすぐに削除
   Drive.Files.remove(tempFile.id);
-  
   return text;
 }
